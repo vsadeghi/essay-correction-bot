@@ -2,7 +2,7 @@ const express = require('express');
 const app = express();
 const port = process.env.PORT || 3000;
 
-app.use(express.json()); // برای دریافت ریکوئست‌های تلگرام
+app.use(express.json());
 app.get('/', (req, res) => res.send('Bot is running!'));
 
 require('dotenv').config();
@@ -11,11 +11,9 @@ const TelegramBot = require('node-telegram-bot-api');
 const Anthropic = require('@anthropic-ai/sdk');
 const axios = require('axios');
 
-// تنظیم Webhook به جای Polling
 const bot = new TelegramBot(process.env.TELEGRAM_TOKEN, { webHook: true });
 bot.setWebHook(`https://${process.env.RENDER_EXTERNAL_HOSTNAME}/bot${process.env.TELEGRAM_TOKEN}`);
 
-// مسیر اختصاصی برای دریافت آپدیت‌ها
 app.post(`/bot${process.env.TELEGRAM_TOKEN}`, (req, res) => {
   bot.processUpdate(req.body);
   res.sendStatus(200);
@@ -51,14 +49,26 @@ async function saveDB(data) {
   });
 }
 
-const SYSTEM_PROMPT = `تو یک استاد هوشمند PTE هستی. زبان تحلیل‌ها فارسی باشد. استاندارد نمره 6.5.
-ساختار خروجی:
-1. Essay Type Check
-2. Pre‑Structure Analysis
-3. Sentence‑by‑Sentence ASI (🟩 اصل، 💬 تحلیل، ✍️ اصلاح)
-4. Overall Summary
-5. Noun Phrase Bank (7 مورد). 
-از نمره عددی استفاده نکن.`;
+const SYSTEM_PROMPT = `تو یک استاد مهربان PTE هستی. هدف تو کمک به دانش‌آموز برای رسیدن به نمره 6.5 است. 
+قوانین رفتاری:
+1. اگر دانش‌آموز از ساختار تمپلت (Intro/Body/Conclusion) استفاده کرد، به تکراری بودن جملات ساختاری گیر نده. PTE روی تمپلت حساس نیست.
+2. فقط زمانی به ساختار گیر بده که در محتوا (Task Response) یا ارتباط منطقی (Coherence) ضعف جدی دارد.
+3. در ارزیابی جملات: اگر غلط گرامری فاحش ندارد، نمره مثبت بده. فقط در صورت وجود راهکار طبیعی‌تر (Native-like)، آن را پیشنهاد بده.
+4. از سخت‌گیری غیرضروری (سطح C2) پرهیز کن و روی سطح 6.5 تمرکز کن.
+
+فرمت خروجی (بسیار مرتب و کارت‌بندی شده):
+Step 1: بررسی ساختار و نوع مقاله (کوتاه)
+
+Step 2: ارزیابی جملات (هر جمله به صورت یک کارت مستقل زیر)
+🔹 🟩 Original: [جمله دانش‌آموز]
+> 💬 تحلیل: [فارسی دوستانه]
+> ✍️ اصلاح: [نسخه طبیعی‌تر]
+
+Step 3: خلاصه و پیشنهادات کاربردی (۳ نکته)
+
+Step 4: Noun Phrase Bank (۷ مورد - انگلیسی و فارسی)
+
+* نکته: از هیچ ستاره (**) برای بولد کردن استفاده نکن. هر جمله را با یک خط خالی از بعدی جدا کن.`;
 
 const inFlight = new Set();
 bot.on('message', async (msg) => {
