@@ -1,106 +1,84 @@
-/**
- * ASI Bot (PTE Essay Correction) — Final version
- * - Webhook (Render)
- * - Whitelist from Google Sheet
- * - Admins bypass whitelist
- * - Usage limit stored in JSONBin as: { users: { [userId]: { count: number } } }
- * - Admin credit commands:
- *    /credit_status <userId>
- *    /credit_reset <userId>
- *    /credit_add <userId> <n>   (reduces used count by n, min 0)
- */
-
 require('dotenv').config();
-
 const express = require('express');
-const TelegramBot = require('node-telegram-bot-api');
+const { Telegraf } = require('telegraf');
 const Anthropic = require('@anthropic-ai/sdk');
-const axios = require('axios');
+const fetch = require('node-fetch');
 
 const app = express();
 app.use(express.json());
 
-// ---------- Config ----------
-const port = process.env.PORT || 3000;
+const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+const bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
 
-const ESSAY_LIMIT = Number(process.env.ESSAY_LIMIT || 8);
-
-// Admin IDs
+// --- Admin List ---
 const ADMIN_IDS = new Set(["97660313", "108265666", "6190801722"]);
 const isAdmin = (id) => ADMIN_IDS.has(String(id));
 
-// Google Sheet whitelist
-const SPREADSHEET_ID = '1lhogjschT9dDW8yZhaSdmhSzvVVtQ7Ih8ijn-mcwt34';
-const SHEET_URL = `https://docs.google.com/spreadsheets/d/${SPREADSHEET_ID}/gviz/tq?tqx=out:csv`;
+// --- DB Logic (JSONBin.io) ---
+const JSONBIN_URL = `https://api.jsonbin.io/v3/b/${process.env.JSONBIN_ID}`;
+const JSONBIN_HEADERS = {
+    "Content-Type": "application/json",
+    "X-Master-Key": process.env.JSONBIN_API_KEY
+};
 
-// ---------- Clients ----------
-const bot = new TelegramBot(process.env.TELEGRAM_TOKEN, { webHook: true });
-const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
-
-// ---------- Webhook / Routes ----------
-app.get('/', (req, res) => res.send('Bot is running!'));
-
-bot.setWebHook(`https://${process.env.RENDER_EXTERNAL_HOSTNAME}/bot${process.env.TELEGRAM_TOKEN}`);
-
-app.post(`/bot${process.env.TELEGRAM_TOKEN}`, (req, res) => {
-  bot.processUpdate(req.body);
-  res.sendStatus(200);
-});
-
-app.listen(port, () => console.log(`Server is listening on port ${port}`));
-
-// ---------- Whitelist Sync ----------
-let allowedUserIds = new Set();
-
-async function syncWhitelist() {
-  try {
-    const response = await axios.get(SHEET_URL, { timeout: 15000 });
-    const ids = response.data
-      .split('\n')
-      .map(r => r.split(',')[0].replace(/"/g, '').trim())
-      .filter(v => /^\d+$/.test(v));
-
-    allowedUserIds = new Set(ids);
-    console.log(`Whitelist synced: ${allowedUserIds.size} users`);
-  } catch (err) {
-    console.error('Whitelist sync failed:', err.message || err);
-  }
-}
-
-syncWhitelist();
-setInterval(syncWhitelist, 60 * 60 * 1000);
-
-// ---------- JSONBin DB (DO NOT change schema) ----------
 async function getDB() {
-  const res = await axios.get(
-    `https://api.jsonbin.io/v3/b/${process.env.JSONBIN_ID}/latest`,
-    { headers: { 'X-Master-Key': process.env.JSONBIN_KEY }, timeout: 15000 }
-  );
-  return res.data.record || { users: {} };
+    try {
+        const response = await fetch(JSONBIN_URL, { headers: JSONBIN_HEADERS });
+        if (!response.ok) throw new Error(`DB Fetch Failed: ${response.statusText}`);
+        const data = await response.json();
+
+        if (!data.record) return { allowedUserIds: [], users: {} };
+        if (!data.record.allowedUserIds) data.record.allowedUserIds = [];
+        if (!data.record.users) data.record.users = {};
+
+        console.log('✅ DB loaded:', JSON.stringify(data.record, null, 2));
+        return data.record;
+    } catch (err) {
+        console.error('❌ DB Load Error:', err);
+        return { allowedUserIds: [], users: {} };
+    }
 }
 
 async function saveDB(data) {
-  await axios.put(
-    `https://api.jsonbin.io/v3/b/${process.env.JSONBIN_ID}`,
-    data,
-    {
-      headers: {
-        'Content-Type': 'application/json',
-        'X-Master-Key': process.env.JSONBIN_KEY
-      },
-      timeout: 15000
+    try {
+        console.log('💾 Saving DB:', JSON.stringify(data, null, 2));
+        const response = await fetch(JSONBIN_URL, {
+            method: 'PUT',
+            headers: JSONBIN_HEADERS,
+            body: JSON.stringify(data)
+        });
+        if (!response.ok) {
+            console.error("❌ DB Save Failed:", response.statusText);
+            return false;
+        }
+        console.log('✅ DB saved successfully');
+        return true;
+    } catch (err) {
+        console.error("❌ DB Save Error:", err);
+        return false;
     }
-  );
 }
+
+const DEFAULT_LIMIT = 8;
 
 function ensureUser(db, userId) {
-  if (!db.users) db.users = {};
-  if (!db.users[userId]) db.users[userId] = { count: 0 };
-  if (typeof db.users[userId].count !== 'number') db.users[userId].count = Number(db.users[userId].count || 0);
-  return db;
+    if (!db.users) db.users = {};
+    let migrated = false;
+
+    if (!db.users[userId]) {
+        db.users[userId] = { count: 0, limit: DEFAULT_LIMIT };
+        migrated = true;
+        console.log(`🆕 New user created: ${userId}`);
+    } else if (db.users[userId].limit === undefined) {
+        db.users[userId].limit = DEFAULT_LIMIT;
+        migrated = true;
+        console.log(`🔧 User migrated: ${userId}`);
+    }
+
+    return { db, migrated };
 }
 
-// ---------- Prompt ----------
+// --- Prompt (UNTOUCHED) ---
 const SYSTEM_PROMPT = `تو یک استاد مهربان و متخصص آزمون PTE هستی که از متد ASI v3.3 استفاده می‌کنی. دانش‌آموز فارسی‌زبان است.
 
 [قوانین حیاتی PTE]
@@ -156,138 +134,271 @@ Therefore, 【Mini-Conclusion】.
 In conclusion, 【Topic】 has different aspects.
 To improve outcomes, 【ActionNP1】 and 【ActionNP2】 should be prioritized in society.`;
 
-// ---------- Helpers ----------
-const inFlight = new Set();
-
-function splitTelegram(text, chunkSize = 3000) {
-  const chunks = text.match(new RegExp(`.{1,${chunkSize}}`, 'gs'));
-  return chunks || [text];
+// --- Safe Multi-part Reply ---
+async function safeReply(ctx, text) {
+    const chunks = text.match(/.{1,3000}/gs) || [text];
+    for (const chunk of chunks) {
+        try {
+            await ctx.reply(chunk.trim(), { parse_mode: 'Markdown' });
+        } catch (e) {
+            await ctx.reply(chunk.trim());
+        }
+    }
 }
 
-async function sendLongMessage(chatId, text) {
-  for (const part of splitTelegram(text, 3000)) {
-    await bot.sendMessage(chatId, part);
-  }
-}
+// --- Commands ---
+bot.start((ctx) => ctx.reply('خوش آمدید! متن Essay خود را بفرستید.'));
 
-// ---------- Admin Commands ----------
-bot.onText(/\/credit_status (\d+)/, async (msg, match) => {
-  if (!isAdmin(msg.from.id)) return;
+bot.command('add_user', async (ctx) => {
+    if (!isAdmin(ctx.from.id)) return ctx.reply("❌ فقط ادمین‌ها دسترسی دارند.");
 
-  const targetUserId = String(match[1]);
+    const target = ctx.message.text.split(' ')[1];
+    if (!target) return ctx.reply("فرمت: /add_user [ID]");
 
-  try {
-    const db = await getDB();
-    const used = db.users?.[targetUserId]?.count ?? 0;
-    const left = Math.max(0, ESSAY_LIMIT - used);
+    try {
+        const db = await getDB();
 
-    return bot.sendMessage(
-      msg.chat.id,
-      `ℹ️ وضعیت کاربر\nUser: ${targetUserId}\nUsed: ${used}\nLeft: ${left}\nLimit: ${ESSAY_LIMIT}`
-    );
-  } catch (err) {
-    console.error(err);
-    return bot.sendMessage(msg.chat.id, "❌ خطا در دریافت وضعیت (JSONBin).");
-  }
+        if (!db.allowedUserIds.includes(target)) {
+            db.allowedUserIds.push(target);
+            await saveDB(db);
+            ctx.reply(`✅ کاربر ${target} به لیست مجاز اضافه شد.`);
+        } else {
+            ctx.reply(`⚠️ کاربر ${target} قبلاً در لیست مجاز است.`);
+        }
+    } catch (e) {
+        console.error(e);
+        ctx.reply("⚠️ خطا در ذخیره اطلاعات.");
+    }
 });
 
-bot.onText(/\/credit_reset (\d+)/, async (msg, match) => {
-  if (!isAdmin(msg.from.id)) return;
+bot.command('remove_user', async (ctx) => {
+    if (!isAdmin(ctx.from.id)) return ctx.reply("❌ فقط ادمین‌ها دسترسی دارند.");
 
-  const targetUserId = String(match[1]);
+    const target = ctx.message.text.split(' ')[1];
+    if (!target) return ctx.reply("فرمت: /remove_user [ID]");
 
-  try {
-    const db = ensureUser(await getDB(), targetUserId);
-    db.users[targetUserId].count = 0;
+    try {
+        const db = await getDB();
 
-    await saveDB(db);
-    return bot.sendMessage(
-      msg.chat.id,
-      `✅ شارژ کامل انجام شد\nUser: ${targetUserId}\ncount → 0\nLimit: ${ESSAY_LIMIT}`
-    );
-  } catch (err) {
-    console.error(err);
-    return bot.sendMessage(msg.chat.id, "❌ خطا در شارژ (JSONBin).");
-  }
+        const index = db.allowedUserIds.indexOf(target);
+        if (index > -1) {
+            db.allowedUserIds.splice(index, 1);
+            await saveDB(db);
+            ctx.reply(`✅ کاربر ${target} از لیست مجاز حذف شد.`);
+        } else {
+            ctx.reply(`⚠️ کاربر ${target} در لیست مجاز نیست.`);
+        }
+    } catch (e) {
+        console.error(e);
+        ctx.reply("⚠️ خطا در ذخیره اطلاعات.");
+    }
 });
 
-bot.onText(/\/credit_add (\d+) (\d+)/, async (msg, match) => {
-  if (!isAdmin(msg.from.id)) return;
+bot.command('credit_status', async (ctx) => {
+    if (!isAdmin(ctx.from.id)) return ctx.reply("❌ فقط ادمین‌ها دسترسی دارند.");
 
-  const targetUserId = String(match[1]);
-  const n = Math.max(0, parseInt(match[2], 10));
+    const target = ctx.message.text.split(' ')[1];
+    if (!target) return ctx.reply("فرمت: /credit_status [ID]");
 
-  try {
-    const db = ensureUser(await getDB(), targetUserId);
+    try {
+        const db = await getDB();
+        const user = db.users?.[target];
 
-    const before = Number(db.users[targetUserId].count || 0);
-    db.users[targetUserId].count = Math.max(0, before - n);
+        const used = user?.count ?? 0;
+        const limit = user?.limit ?? DEFAULT_LIMIT;
+        const remaining = limit - used;
+        const status = user ? "✅ فعال" : "⏳ هنوز پیام نفرستاده";
 
-    await saveDB(db);
-
-    const after = db.users[targetUserId].count;
-    return bot.sendMessage(
-      msg.chat.id,
-      `✅ شارژ انجام شد\nUser: ${targetUserId}\nUsed: ${before} → ${after}\n(+${n} essay credit)`
-    );
-  } catch (err) {
-    console.error(err);
-    return bot.sendMessage(msg.chat.id, "❌ خطا در شارژ (JSONBin).");
-  }
+        ctx.reply(
+            `📊 وضعیت کاربر ${target}:\n\n` +
+            `• وضعیت: ${status}\n` +
+            `• استفاده شده: ${used}\n` +
+            `• سقف: ${limit}\n` +
+            `• باقی‌مانده: ${remaining}`
+        );
+    } catch (e) {
+        console.error(e);
+        ctx.reply("⚠️ خطا در دریافت اطلاعات.");
+    }
 });
 
-// ---------- Main Handler (Essay) ----------
-bot.on('message', async (msg) => {
-  const chatId = String(msg.chat.id);
-  const userId = String(msg.from.id);
-  const text = msg.text;
+bot.command('credit_add', async (ctx) => {
+    if (!isAdmin(ctx.from.id)) return ctx.reply("❌ فقط ادمین‌ها دسترسی دارند.");
 
-  // ignore non-text
-  if (!text) return;
+    const parts = ctx.message.text.split(' ');
+    const target = parts[1];
+    const n = parseInt(parts[2]);
 
-  // commands are handled by onText above
-  if (text.startsWith('/')) return;
+    if (!target || isNaN(n)) return ctx.reply("فرمت: /credit_add [ID] [تعداد]");
 
-  // basic validation
-  if (text.trim().split(/\s+/).length < 20) {
-    return bot.sendMessage(chatId, "لطفاً متن کامل Essay را بفرست.");
-  }
+    try {
+        let db = await getDB();
+        const result = ensureUser(db, target);
+        db = result.db;
 
-  // ✅ whitelist check (admins bypass whitelist)
-  if (!isAdmin(userId) && !allowedUserIds.has(userId)) {
-    return bot.sendMessage(chatId, "🚫 دسترسی ندارید.");
-  }
+        db.users[target].limit = (db.users[target].limit ?? DEFAULT_LIMIT) + n;
 
-  if (inFlight.has(userId)) {
-    return bot.sendMessage(chatId, "⏳ در حال پردازش...");
-  }
+        const saved = await saveDB(db);
+        if (saved) {
+            ctx.reply(
+                `✅ ${n} اعتبار به کاربر ${target} اضافه شد.\n` +
+                `سقف جدید: ${db.users[target].limit}`
+            );
+        } else {
+            ctx.reply("⚠️ خطا در ذخیره اطلاعات.");
+        }
+    } catch (e) {
+        console.error(e);
+        ctx.reply("⚠️ خطا در ذخیره اطلاعات.");
+    }
+});
 
-  inFlight.add(userId);
-  try {
-    const db = ensureUser(await getDB(), userId);
+bot.command('credit_use', async (ctx) => {
+    if (!isAdmin(ctx.from.id)) return ctx.reply("❌ فقط ادمین‌ها دسترسی دارند.");
 
-    if (db.users[userId].count >= ESSAY_LIMIT) {
-      return bot.sendMessage(chatId, "❌ سهمیه ۸ تایی شما تمام شده است.");
+    const parts = ctx.message.text.split(' ');
+    const target = parts[1];
+    const n = parseInt(parts[2]);
+
+    if (!target || isNaN(n)) return ctx.reply("فرمت: /credit_use [ID] [تعداد]");
+
+    try {
+        let db = await getDB();
+        const result = ensureUser(db, target);
+        db = result.db;
+
+        db.users[target].count = (db.users[target].count ?? 0) + n;
+
+        const saved = await saveDB(db);
+        if (saved) {
+            ctx.reply(`✅ count کاربر ${target} به ${db.users[target].count} رسید.`);
+        } else {
+            ctx.reply("⚠️ خطا در ذخیره اطلاعات.");
+        }
+    } catch (e) {
+        console.error(e);
+        ctx.reply("⚠️ خطا در ذخیره اطلاعات.");
+    }
+});
+
+bot.command('credit_reset', async (ctx) => {
+    if (!isAdmin(ctx.from.id)) return ctx.reply("❌ فقط ادمین‌ها دسترسی دارند.");
+
+    const target = ctx.message.text.split(' ')[1];
+    if (!target) return ctx.reply("فرمت: /credit_reset [ID]");
+
+    try {
+        const db = await getDB();
+
+        if (!db.users?.[target]) {
+            return ctx.reply(`❌ کاربر ${target} در دیتابیس یافت نشد.`);
+        }
+
+        db.users[target] = { count: 0, limit: DEFAULT_LIMIT };
+
+        const saved = await saveDB(db);
+        if (saved) {
+            ctx.reply(
+                `✅ اعتبار کاربر ${target} ریست شد.\n` +
+                `count: 0 | limit: ${DEFAULT_LIMIT}`
+            );
+        } else {
+            ctx.reply("⚠️ خطا در ذخیره اطلاعات.");
+        }
+    } catch (e) {
+        console.error(e);
+        ctx.reply("⚠️ خطا در ذخیره اطلاعات.");
+    }
+});
+
+// --- Text Handler ---
+bot.on('text', async (ctx) => {
+    if (ctx.message.text.startsWith('/')) return;
+
+    const userId = String(ctx.from.id);
+    const text = ctx.message.text;
+
+    // حداقل ۲۰ کلمه
+    if (text.trim().split(/\s+/).length < 20) {
+        return ctx.reply("لطفاً متن کامل Essay را بفرست.");
     }
 
-    const response = await anthropic.messages.create({
-      model: "claude-sonnet-4-6",
-      max_tokens: 4000,
-      system: SYSTEM_PROMPT,
-      messages: [{ role: "user", content: text }]
-    });
+    try {
+        console.log(`📨 Message from user: ${userId}`);
 
-    // increment usage after successful generation
-    db.users[userId].count += 1;
-    await saveDB(db);
+        let db = await getDB();
 
-    const reply = response?.content?.[0]?.text || "❌ پاسخی دریافت نشد.";
-    await sendLongMessage(chatId, reply);
+        const hasAccess = isAdmin(userId) || db.allowedUserIds.includes(userId);
+        if (!hasAccess) {
+            console.log(`❌ Unauthorized access attempt: ${userId}`);
+            return ctx.reply("❌ دسترسی غیرمجاز. لطفاً با ادمین تماس بگیرید.");
+        }
 
-  } catch (err) {
-    console.error(err);
-    bot.sendMessage(chatId, "❌ خطایی رخ داد.");
-  } finally {
-    inFlight.delete(userId);
-  }
+        const result = ensureUser(db, userId);
+        db = result.db;
+
+        if (result.migrated) {
+            console.log(`💾 Saving new user: ${userId}`);
+            await saveDB(db);
+        }
+
+        const userLimit = db.users[userId].limit ?? DEFAULT_LIMIT;
+        const userCount = db.users[userId].count ?? 0;
+
+        console.log(`📊 User ${userId} - Count: ${userCount}, Limit: ${userLimit}`);
+
+        if (!isAdmin(userId) && userCount >= userLimit) {
+            console.log(`⛔ User ${userId} quota exceeded`);
+            return ctx.reply(
+                `❌ سهمیه شما تمام شده است.\n\n` +
+                `استفاده شده: ${userCount}/${userLimit}\n` +
+                `برای افزایش سهمیه با ادمین تماس بگیرید.`
+            );
+        }
+
+        await ctx.sendChatAction('typing');
+
+        console.log(`🤖 Calling Claude API for user ${userId}...`);
+
+        const response = await anthropic.messages.create({
+            model: "claude-sonnet-4-6",
+            max_tokens: 4000,
+            system: SYSTEM_PROMPT,
+            messages: [{ role: "user", content: text }],
+        });
+
+        console.log(`✅ Claude API response received for user ${userId}`);
+
+        if (!isAdmin(userId)) {
+            console.log(`📈 Incrementing count for user ${userId}: ${userCount} -> ${userCount + 1}`);
+            db.users[userId].count = userCount + 1;
+
+            const saved = await saveDB(db);
+            if (saved) {
+                console.log(`✅ Count saved successfully for user ${userId}`);
+            } else {
+                console.error(`❌ Failed to save count for user ${userId}`);
+            }
+        } else {
+            console.log(`👑 Admin ${userId} - count not incremented`);
+        }
+
+        await safeReply(ctx, response.content[0].text);
+
+    } catch (e) {
+        console.error('❌ Error in text handler:', e);
+        ctx.reply("⚠️ خطایی رخ داد. لطفاً دوباره تلاش کنید.");
+    }
+});
+
+// --- Server ---
+const PORT = process.env.PORT || 3000;
+const webhookPath = `/bot${process.env.TELEGRAM_BOT_TOKEN}`;
+
+bot.telegram.setWebhook(`${process.env.URL}${webhookPath}`);
+app.use(bot.webhookCallback(webhookPath));
+
+app.listen(PORT, '0.0.0.0', () => {
+    console.log(`🚀 Bot running on port ${PORT}`);
+    console.log(`📡 Webhook: ${process.env.URL}${webhookPath}`);
 });
