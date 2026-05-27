@@ -202,25 +202,27 @@ bot.command('credit_status', async (ctx) => {
 
     try {
         const db = await getDB();
-        const user = db.users?.[target];
 
+        // چک کن کاربر در لیست مجاز هست
+        if (!db.allowedUserIds.includes(target) && !isAdmin(target)) {
+            return ctx.reply(`❌ کاربر ${target} در لیست مجاز نیست.`);
+        }
+
+        const user = db.users?.[target];
         const used = user?.count ?? 0;
         const limit = user?.limit ?? DEFAULT_LIMIT;
-        const remaining = limit - used;
-        const status = user ? "✅ فعال" : "⏳ هنوز پیام نفرستاده";
 
         ctx.reply(
             `📊 وضعیت کاربر ${target}:\n\n` +
-            `• وضعیت: ${status}\n` +
+            `• وضعیت: ${user ? "✅ فعال" : "⏳ هنوز پیام نفرستاده"}\n` +
             `• استفاده شده: ${used}\n` +
             `• سقف: ${limit}\n` +
-            `• باقی‌مانده: ${remaining}`
+            `• باقی‌مانده: ${limit - used}`
         );
     } catch (e) {
-        console.error(e);
-        ctx.reply("⚠️ خطا در دریافت اطلاعات.");
-    }
+        ctx.reply("⚠️ خطا در دریافت اطلاعات.");}
 });
+
 
 bot.command('credit_add', async (ctx) => {
     if (!isAdmin(ctx.from.id)) return ctx.reply("❌ فقط ادمین‌ها دسترسی دارند.");
