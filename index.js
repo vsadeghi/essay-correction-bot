@@ -395,6 +395,8 @@ bot.on('text', async (ctx) => {
 const PORT = process.env.PORT || 3000;
 const webhookPath = `/bot${process.env.TELEGRAM_BOT_TOKEN}`;
 
+app.use(webhookPath, (req, res) => bot.handleUpdate(req.body, res));
+
 app.listen(PORT, '0.0.0.0', async () => {
     console.log(`🚀 Bot running on port ${PORT}`);
     console.log(`📡 Webhook: ${process.env.URL}${webhookPath}`);
