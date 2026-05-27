@@ -395,10 +395,12 @@ bot.on('text', async (ctx) => {
 const PORT = process.env.PORT || 3000;
 const webhookPath = `/bot${process.env.TELEGRAM_BOT_TOKEN}`;
 
-bot.telegram.setWebhook(`${process.env.URL}${webhookPath}`);
-app.use(bot.webhookCallback(webhookPath));
-
-app.listen(PORT, '0.0.0.0', () => {
+app.listen(PORT, '0.0.0.0', async () => {
     console.log(`🚀 Bot running on port ${PORT}`);
     console.log(`📡 Webhook: ${process.env.URL}${webhookPath}`);
+    
+    // setWebhook بعد از اینکه سرور بالا اومد
+    await bot.telegram.setWebhook(`${process.env.URL}${webhookPath}`);
+    console.log('✅ Webhook set successfully');
 });
+
