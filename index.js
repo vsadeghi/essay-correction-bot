@@ -406,6 +406,8 @@ const response = await anthropic.messages.create(
 const PORT = process.env.PORT || 3000;
 const webhookPath = `/bot${process.env.TELEGRAM_BOT_TOKEN}`;
 
+app.get('/', (req, res) => res.send('OK'));
+
 app.use(webhookPath, (req, res) => bot.handleUpdate(req.body, res));
 
 app.listen(PORT, '0.0.0.0', async () => {
