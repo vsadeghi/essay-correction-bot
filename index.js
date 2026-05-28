@@ -112,6 +112,7 @@ STEP 5 – یادگیری گرامر
 
 STEP 6 – مدل مقاله استاندارد (بر اساس تمپلت)
 یک مقاله بهبودیافته (تا ۲۷۰ کلمه) با استفاده از الگوی زیر بنویس:
+This template is a flexible guide. Follow it as closely as possible, but prioritize grammatically correct and natural English over strict adherence — especially in concluding and introduction sentences.
 
 [مقدمه ۴۰-۵۰ کلمه]
 【Topic】 has become important in 【ContextNP】.
