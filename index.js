@@ -358,16 +358,24 @@ bot.on('text', async (ctx) => {
             );
         }
 
-        await ctx.sendChatAction('typing');
+        // جدید:
+await ctx.sendChatAction('typing');
+await ctx.reply("⏳ در حال بررسی مقاله شما... لطفاً چند لحظه صبر کنید.");
 
-        console.log(`🤖 Calling Claude API for user ${userId}...`);
+console.log(`🤖 Calling Claude API for user ${userId}...`);
 
-        const response = await anthropic.messages.create({
-            model: "claude-sonnet-4-6",
-            max_tokens: 4000,
-            system: SYSTEM_PROMPT,
-            messages: [{ role: "user", content: text }],
-        });
+const response = await anthropic.messages.create(
+    {
+        model: "claude-sonnet-4-6",
+        max_tokens: 4000,
+        system: SYSTEM_PROMPT,
+        messages: [{ role: "user", content: text }],
+    },
+    {
+        timeout: 120000  // 120 ثانیه به جای 90
+    }
+);
+
 
         console.log(`✅ Claude API response received for user ${userId}`);
 
